@@ -15,7 +15,7 @@ export enum UserRole {
  *
  * Note: `firstName` and `lastName` are optional because not every
  * authentication flow (e.g. Stellar-only sign-in, invite acceptance, or
- * legacy accounts migrated from an email-only store) knows the user's name.
+ * legacy accounts migrated from an email-only store) does not know the user's name.
  * Consumers must not assume these fields are present; use `getUserDisplayName`
  * (or an explicit `'firstName' in user` guard) instead of accessing them directly.
  */

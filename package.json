@@ -11,6 +11,7 @@
     "dev:backend": "cd backend && npm run start:dev",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:deps": "docker compose -f docker-compose.dev.yml up -d --wait",
+    "dev:with-deps": "npm run dev:deps && npm run dev",
     "dev:deps:logs": "docker compose -f docker-compose.dev.yml logs -f",
     "dev:deps:down": "docker compose -f docker-compose.dev.yml down",
     "build": "npm run build:backend && npm run build:frontend",

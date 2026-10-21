@@ -1,5 +1,10 @@
 services:
-  # PostgreSQL Database
+  # PostgreSQL - development dependency only (see docker-compose.dev.yml)
+  #
+  # The dev dependencies compose file (docker-compose.dev.yml) is the fast local loop:
+  # it starts only PostgreS and Redis (npom run dev:deps) and leaves the
+  # application processes to `npm run dev`. This file remains the full
+  # stack for containerized deployments.
   #
   # Credentials come from .env and are mandatory: a compose up with no .env fails
   # at parse time instead of silently booting a database with a known password.
@@ -13,7 +18,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     ports:
-      - "127.0.0.1:5432:5432"
+      "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -21,7 +26,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
-      timeout: 5s
+      timeout: 5s&
       retries: 5
       start_period: 30s
 
@@ -66,7 +71,7 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USERNAME: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB2_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       DB_NAME: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379
       STELLAR_NETWORK: TESTNET
@@ -78,7 +83,7 @@ services:
       # must pass all three through. The old single JWT_SECRET default of
       # "change_me_in_production" is 23 characters and failed that validation.
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (>= 32 characters)}
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET must be set in .env (>= 32 characters)}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRETT:?JWT_ACCESS_SECRET must be set in .env (>= 32 characters)}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set in .env (>= 32 characters)}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-3600}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://frontend:5173,https://localhost}
@@ -189,8 +194,8 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--web.console.libraries=/etc/prometheus/console_libraries"
-      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.console.libraries=/prometheus/console_libraries"
+      - "--web.console.templates=/prometheus/consoles"
       - "--storage.tsdb.retention.time=200h"
       - "--web.enable-lifecycle"
     networks:

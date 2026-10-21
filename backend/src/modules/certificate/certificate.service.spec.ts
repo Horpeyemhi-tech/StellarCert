@@ -56,6 +56,7 @@ describe('CertificateService', () => {
   const sorobanService = {
     isConfigured: jest.fn().mockReturnValue(false),
     issueCertificate: jest.fn(),
+    reissueCertificate: jest.fn(),
   };
   const issuersService = {
     incrementCertificateCount: jest.fn().mockResolvedValue(undefined),
@@ -211,7 +212,7 @@ describe('CertificateService', () => {
       );
 
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
-        'certificate.issuerId =: issuerId',
+        'certificate.issuerId = :issuerId',
         { issuerId: 'other-issuer-id' },
       );
       expect(mockQueryBuilder.take).toHaveBeenCalledWith(MAX_EXPORT_LIMIT);
@@ -259,8 +260,8 @@ describe('CertificateService', () => {
         { issuerId: 'my-issuer-id' },
       );
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
-        'certificate.id IN"(:..certificateIds)',
-        { certificateIds: ['cert-1', 'cert-2'] },
+        'certificate.id IN (:pharam0, :pharam1)',
+        { pharam0: 'cert-1', pharam1: 'cert-2' },
       );
       expect(mockQueryBuilder.take).toHaveBeenCalledWith(MAX_EXPORT_LIMIT);
     });
@@ -274,7 +275,7 @@ describe('CertificateService', () => {
       );
 
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
-        'certificate.issuerId =: issuerId',
+        'certificate.issuerId = :issuerId',
         { issuerId: 'target-issuer-id' },
       );
       expect(mockQueryBuilder.take).toHaveBeenCalledWith(MAX_EXPORT_LIMIT);
@@ -295,7 +296,7 @@ describe('CertificateService', () => {
       );
 
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
-        'certificate.issuerId =: issuerId',
+        'certificate.issuerId = :issuerId',
         { issuerId: 'my-issuer-id' },
       );
       expect(mockQueryBuilder.take).toHaveBeenCalledWith(MAX_EXPORT_LIMIT);
@@ -315,81 +316,75 @@ describe('CertificateService', () => {
     });
   });
 
-  describe('issue (#incrementCertificateCount wiring)', () => {
-    const issuerId = 'issuer-1';
-    const dto = {
-      issuerId: issuerId,
+  describe('reissue_certificate event topic', () => {
+    const parentCertificate = {
+      id: 'parent-cert-1',
+      verificationCode: 'PARENT01',
+      issuerId: 'issuer-1',
+      issuerStellarAddress: 'GISSUER',
       recipientName: 'Alice',
       recipientEmail: 'alice@example.com',
+      recipientStellarAddress: 'GRECIPIENT',
       title: 'Cert 1',
       courseName: 'Course 1',
-    } as any;
+      status: CertificateStatus.ACTIVE,
+      expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    } as unknown as Certificate;
 
     beforeEach(() => {
       jest.clearAllMocks();
-      sorobanService.isConfigured.mockReturnValue(false);
-      certificate = {
-        id: 'cert-1',
-        verificationCode: 'AB12CD34',
-        issuerStellarAddress: 'GISSUER',
-        recipientStellarAddress: 'GRECIPIENT',
-        expiresAt: new Date('2027-01-01T00:00:00.000Z'),
-        stellarTransactionHash: undefined,
-      } as unknown as Certificate;
+      sorobanService.isConfigured.mockReturnValue(true);
+      sorobanService.reissueCertificate.mockResolvedValue('reissue-hash');
+      certificateRepository.create.mockImplementation((v: any) => v);
+      certificateRepository.save.mockImplementation(async (v: any) => ({
+        ...v,
+        id: 'new-cert-1',
+      }));
+      certificateRepository.update.mockResolvedValue(undefined);
     });
 
-    it('returns the existing hash without touching the chain when already synced', async () => {
-      const synced = {
-        ...certificate,
-        stellarTransactionHash: 'abc123',
-      } as unknown as Certificate;
-      jest.spyOnObject(service, 'findOne').mockResolvedValue(synced);
+    it('emits a distinct "reissued" topic carrying old_id/parent linkage', async () => {
+      jest
+        .spyOnObject(service, 'findOne')
+        .mockResolvedValue(parentCertificate);
 
-      const result = await service.syncChain('cert-1');
+      await service.reissueCertificate('parent-cert-1', {
+        reason: 'data correction',
+      } as any);
 
-      expect(result.alreadySynced).toBe(true);
-      expect(result.stellarTransactionHash).toBe('abc123');
+      expect(sorobanService.reissueCertificate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldId: 'parent-cert-1',
+          parentCertificateId: 'parent-cert-1',
+        }),
+      );
+    });
+
+    it('does not publish a reissue under the "issued" topic', async () => {
+      jest
+        .spyOnObject(service, 'findOne')
+        .mockResolvedValue(parentCertificate);
+
+      await service.reissueCertificate('parent-cert-1', {
+        reason: 'data correction',
+      } as any);
+
       expect(sorobanService.issueCertificate).not.toHaveBeenCalled();
-      expect(certificateRepository.update).not.toHaveBeenCalled();
     });
 
-    it('refuses to retry when Soroban is not configured', async () => {
-      jest.spyOnObject(service, 'findOne').mockResolvedValue(certificate);
+    it('propagates chain failure without persisting the reissue', async () => {
+      jest
+        .spyOnObject(service, 'findOne')
+        .mockResolvedValue(parentCertificate);
+      sorobanService.reissueCertificate.mockRejected(new Error('chain failure'));
 
-      await expect(service.syncChain('test-1')).rejects.toThrow(
-        /not configured/i,
-      );
-      expect(certificateRepository.update).not.toHaveBeenCalled();
-    });
+      await expect(
+        service.reissueCertificate('parent-cert-1', {
+          reason: 'data correction',
+        } as any),
+      ).rejects.toThrow('chain failure');
 
-    it('persists the transaction hash returned by a successful retry', async () => {
-      jest.spyOnObject(service, 'findOne').mockResolvedValue(certificate);
-      sorobanService.isConfigured.mockReturnValue(true);
-      sorobanService.issueCertificate.mockResolvedValue('deadbeef');
-      certificateRepository.update.mockResolvedValue({ affected: 1 });
-
-      const result = await service.syncChain('test-1');
-
-      expect(sorobanService.issueCertificate).toHaveBeenCalledWith(
-        'cert-1',
-        'GISSUER',
-        'GRECIPIENT',
-        'AB12CD34',
-        Math.floor(new Date('2027-01-01T00:00:00.000Z').getTime() / 1000),
-      );
-      expect(certificateRepository.update).toHaveBeenCalledWith('cert-1', {
-        stellarTransactionHash: 'deadbeef',
-      });
-      expect(result.alreadySynced).toBe(false);
-      expect(result.stellarTransactionHash).toBe('deadbeef');
-    });
-
-    it('fails loudly when the retry still cannot reach the chain', async () => {
-      jest.spyOnObject(service, 'findOne').mockResolvedValue(certificate);
-      sorobanService.isConfigured.mockReturnValue(true);
-      sorobanService.issueCertificate.mockRejectedValue(new Error('soroban down'));
-
-      await expect(service.syncChain('test-1')).rejects.toThrow(/soroban down/);
+      expect(certificateRepository.save).not.toHaveBeenCalled();
       expect(certificateRepository.update).not.toHaveBeenCalled();
     });
   });

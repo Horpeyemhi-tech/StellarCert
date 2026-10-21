@@ -60,8 +60,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 20
-      - name: Security audit
-        run: npm run security:audit
+      - name: Security audit (fail on high or critical)
+        run: npm audit --audit-level=high
 
   # Case-sensitive filesystems (Linux and every CI runner) resolve import
   # specifiers exactly, so a casing typo that works on macOS/Windows breaks
@@ -90,6 +90,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install frontend dependencies
         run: npm ci
+      - name: Audit frontend dependencies (fail on high or critical)
+        run: npm audit --audit-level=high
       - name: Lint frontend
         run: npm run lint -- --max-warnings 0
       - name: Typecheck frontend
@@ -122,6 +124,8 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - name: Install backend dependencies
         run: npm ci
+      - name: Audit backend dependencies (fail on high or critical)
+        run: npm audit --audit-level=high
       - name: Lint backend
         run: npm run lint -- --max-warnings 0
       - name: Typecheck backend
@@ -204,6 +208,8 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - name: Install backend dependencies
         run: npm ci
+      - name: Audit backend dependencies (fail on high or critical)
+        run: npm audit --audit-level=high
       - name: Run backend e2e tests
         run: npm run test:e2e -- --ci --runInBand
 

@@ -1,4 +1,4 @@
-/**
+/*
  * Certificate Revocation List (CRL) integration module.
  * Addresses issue #421: CRL contract is separate but should be integrated.
  *
@@ -29,6 +29,21 @@ export interface CRLRevocationAddedEvent {
 }
 
 export type CRLRevocationListener = (event: CRLRevocationAddedEvent) => void;
+
+/**
+ * Resolve the 0-based offset for a 1-based page number.
+ *
+ * This is the single shared pagination helper used by all collections
+ * (certificates, requests, and CRL-backed lists) so that page indexing is
+ * consistent throughout the codebase. Pages are 1-based: `page=1` returns
+ * the first page. Page values below 1 are clamped to page 1, and non-integer
+ * values are treated as page 1. Limits below 1 are clamped to 1.
+ */
+export function paginationOffset(page: number, limit: number): number {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+  const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+  return (safePage - 1) * safeLimit;
+}
 
 export class CertificateRevocationList {
   private revoked = new Map<string, RevocationEntry>();
@@ -82,6 +97,16 @@ export class CertificateRevocationList {
    */
   listRevoked(): string[] {
     return Array.from(this.revoked.keys());
+  }
+
+  /**
+   * Returns a page of revocation entries using the shared 1-based pagination
+   * helper, so CRL-backed lists align with certificate and request listing.
+   */
+  listRevokedPage(page: number, limit: number): RevocationEntry[] {
+    const start = paginationOffset(page, limit);
+    const size = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+    return Array.from(this.revoked.values()).slice(start, start + size);
   }
 
   private emitRevocationAdded(entry: RevocationEntry): void {

@@ -18,6 +18,7 @@ describe('CertificateTransferService', () => {
       create: jest.fn((dto) => ({ id: 'transfer-1', ...dto })),
       save: jest.fn((entity) => Promise.resolve(entity)),
       findOne: jest.fn(),
+      find: jest.fn(),
     };
 
     certRepo = {
@@ -26,11 +27,11 @@ describe('CertificateTransferService', () => {
     };
 
     auditService = {
-      log: jest.fn().mockResolvedValue(undefined),
+      log: jest.fn().mockResolved(undefined),
     };
 
     notificationsService = {
-      createNotification: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      createNotification: jest.fn().mockResolved({ id: 'notif-1' }),
     };
 
     logger = {
@@ -44,8 +45,8 @@ describe('CertificateTransferService', () => {
     };
 
     emailService = {
-      sendTransferConfirmationCode: jest.fn().mockResolvedValue(undefined),
-      sendTransferCompletedNotice: jest.fn().mockResolvedValue(undefined),
+      sendTransferConfirmationCode: jest.fn().mockResolved(undefined),
+      sendTransferCompletedNotice: jest.fn().mockResolved(undefined),
     };
 
     service = new CertificateTransferService(
@@ -185,6 +186,132 @@ describe('CertificateTransferService', () => {
         certificateTitle: 'Blockchain Certified Developer',
         certificateId: 'cert-1',
       });
+    });
+  });
+
+  describe('getTransfer authorization', () => {
+    const buildTransfer = () => ({
+      id: 'transfer-1',
+      certificateId: 'cert-1',
+      fromOwnerId: 'owner-from',
+      toOwnerId: 'to-owner',
+      fromEmail: 'from@example.com',
+      toEmail: 'to@example.com',
+      fromName: 'From Owner',
+      toName: 'To Owner',
+      fee: 10,
+      memo: 'sensitive memo',
+      status: TransferStatus.PENDING,
+    });
+
+    it('returns the transfer to the from owner', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'owner-from',
+        role: UserRole.USER,
+      });
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe('transfer-1');
+    });
+
+    it('returns the transfer to the to owner', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'to-owner',
+        role: UserRole.USER,
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('returns the transfer to an admin', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'admin-1',
+        role: UserRole.ADMIN,
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('rejects an unrelated observer without leaking transfer details', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      await expect(
+        service.getTransfer('transfer-1', {
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects an anonymous caller', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      await expect(service.getTransfer('transfer-1', undefined as any)).rejects.toThrow();
+    });
+
+    it('rejects when the transfer does not exist', async () => {
+      transferRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.getTransfer('transfer-1', {
+          id: 'owner-from',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getTransferHistoryPublic authorization', () => {
+    it('returns history to a participant', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      const result = await service.getTransferHistoryPublic('cert-1', {
+        id: 'owner-from',
+        role: UserRole.USER,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('rejects an unrelated observer', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getTransferHistoryPublic('cert-1', {
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getPendingTransfersPublic authorization', () => {
+    it('returns pending transfers to a participant', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      const result = await service.getPendingTransfersPublic({
+        id: 'to-owner',
+        role: UserRole.USER,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('rejects an unrelated observer', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getPendingTransfersPublic({
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
     });
   });
 });

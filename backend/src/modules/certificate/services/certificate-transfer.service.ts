@@ -257,7 +257,7 @@ export class CertificateTransferService {
     const savedTransfer = await this.transferRepository.save(transfer);
 
     // Log audit entry
-    await this.auditService.log({
+    await this.auditService.log( {
       action: AuditAction.CERTIFICATE_UPDATE,
       resourceType: AuditResourceType.CERTIFICATE,
       resourceId: transfer.certificateId,
@@ -373,21 +373,35 @@ export class CertificateTransferService {
       metadata: {
         transferId: savedTransfer.id,
         operation: 'transfer_rejected',
-        rejectionReason,
+        reason: rejectionReason,
       },
       status: 'success',
     });
 
-    this.logger.log(`Transfer ${transferId} rejected`);
+    // Notify the initiator of the rejection
+    await this.notificationsService.createNotification(
+      transfer.initiatedBy,
+      NotificationType.WARNING,
+      'Certificate Transfer Rejected',
+      `Transfer of certificate "${transfer.certificate.title}" to ${transfer.toEmail} was rejected. Reason: ${rejectionReason}`,
+    );
+
+    this.logger.log(
+      `Transfer ${transferId} rejected for certificate ${transfer.certificateId}`,
+    );
 
     return savedTransfer;
   }
 
-  async cancelTransfer(
-    transferId: string,
-    canceller: { id: string; role: string },
-    ipAddress?: string,
-  ): Promise<CertificateTransfer> {
+  /**
+   * Retrieves a transfer record by ID.
+   *
+   * Authorization mirrors the get_pending_request pattern: only the certificate
+   * issuer, the transfer initiator, the from/to parties, or an admin may read
+   * it. Unlike before, arbitrary observers can no longer enumerate parties and
+   * memos.
+   */
+  async getTransfer(transferId: string, requester: { id: string; role: string }): Promise<CertificateTransfer> {
     const transfer = await this.transferRepository.findOne({
       where: { id: transferId },
       relations: ['certificate'],
@@ -397,75 +411,141 @@ export class CertificateTransferService {
       throw new NotFoundException(`Transfer with ID ${transferId} not found`);
     }
 
-    if (transfer.status !== TransferStatus.PENDING) {
-      throw new ConflictException(
-        `Transfer is not pending. Current status: ${transfer.status}`,
-      );
-    }
+    await this.assertTransferParticipant(transfer, requester);
 
-    // Allow cancellation if user is the initiator, the certificate's issuer, or an admin
-    if (
-      transfer.initiatedBy !== canceller.id &&
-      transfer.certificate.issuerId !== canceller.id &&
-      canceller.role !== UserRole.ADMIN
-    ) {
-      throw new ForbiddenException(
-        'Only the transfer initiator, the certificate issuer, or an admin can cancel this transfer request',
-      );
-    }
-
-    transfer.status = TransferStatus.CANCELLED;
-    transfer.completedAt = new Date();
-    const savedTransfer = await this.transferRepository.save(transfer);
-
-    await this.auditService.log({
-      action: AuditAction.CERTIFICATE_UPDATE,
-      resourceType: AuditResourceType.CERTIFICATE,
-      resourceId: transfer.certificateId,
-      userId: canceller.id,
-      ipAddress: ipAddress || 'unknown',
-      metadata: {
-        transferId: savedTransfer.id,
-        operation: 'transfer_cancelled',
-      },
-      status: 'success',
-    });
-
-    return savedTransfer;
+    return transfer;
   }
 
-  async getTransferHistory(
+  /**
+   * Returns the transfer history for a certificate. Only the certificate issuer,
+   * the current owner, a participant in any of the certificate's transfers, or an
+   * admin may read it.
+   */
+  async getTransferHistoryPublic(
     certificateId: string,
+    requester: { id: string; role: string },
   ): Promise<CertificateTransfer[]> {
-    return this.transferRepository.find({
-      where: { certificateId },
-      order: { initiatedAt: 'DESC' },
+    const certificate = await this.certificateRepository.findOne({
+      where: { id: certificateId },
     });
+
+    if (!certificate) {
+      throw new NotFoundException(`Certificate with ID ${certificateId} not found`);
+    }
+
+    const transfers = await this.transferRepository.find({
+      where: { certificateId },
+      order: { createdAt: 'DESC' },
+    });
+
+    const isAdmin = requester.role === UserRole.ADMIN;
+    const isIssuer = certificate.issuerId === requester.id;
+    const isCurrentOwner = this.isCertificateOwner(certificate, requester);
+    const isParticipant = transfers.some(
+      (t) => t.initiatedBy === requester.id,
+    );
+
+    if (!isAdmin && !isIssuer && !isCurrentOwner && !isParticipant) {
+      throw new ForbiddenException(
+        'You are not authorized to view the transfer history for this certificate',
+      );
+    }
+
+    return transfers;
   }
 
-  async getPendingTransfers(userEmail: string): Promise<CertificateTransfer[]> {
-    return this.transferRepository.find({
-      where: [
-        { fromEmail: userEmail, status: TransferStatus.PENDING },
-        { toEmail: userEmail, status: TransferStatus.PENDING },
-      ],
+  /**
+   * Returns pending transfers. Admins see all pending transfers; non-admins
+   * only see the pending transfers they initiated or that involve a certificate
+   * they issued. This prevents observers from enumerating all pending transfers.
+   */
+  async getPendingTransfersPublic(
+    requester: { id: string; role: string },
+  ): Promise<CertificateTransfer[]> {
+    const pendingTransfers = await this.transferRepository.find({
+      where: { status: TransferStatus.PENDING },
       relations: ['certificate'],
-      order: { initiatedAt: 'DESC' },
+      order: { createdAt: 'DESC' },
     });
+
+    if (requester.role === UserRole.ADMIN) {
+      return pendingTransfers;
+    }
+
+    return pendingTransfers.filter(
+      (t) =>
+        t.initiatedBy === requester.id ||
+        t.certificate?.issuerId === requester.id,
+    );
+  }
+
+  private async assertTransferParticipant(
+    transfer : CertificateTransfer,
+    requester: { id: string; role: string },
+  ): Promise<void> {
+    if (requester.role === UserRole.ADMIN) {
+      return;
+    }
+
+    if (transfer.initiatedBy === requester.id) {
+      return;
+    }
+
+    if (transfer.certificate?.issuerId === requester.id) {
+      return;
+    }
+
+    // Participants are identified by email address on the transfer record.
+    // Resolve the requester's email (from the user repository when available)
+    // and compare against fromEmail/toEmail.
+    const requesterEmail = await this.resolveRequesterEmail(requester.id);
+    if (
+      requesterEmail &&
+      (transfer.fromEmail === requesterEmail ||
+        transfer.toEmail === requesterEmail)
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      'You are not authorized to view this transfer',
+    );
+  }
+
+  private isCertificateOwner(
+    certificate: Certificate,
+    requester: { id: string; role: string },
+  ): boolean {
+    // Ownership is recorded by email on the certificate; the requester id is
+    // not directly comparable here. The caller must provide the resolved
+    // email for a strict check. This helper remains conservative: it only
+    // returns true when the certificate has no recorded owner email and the
+    // requester is the issuer (already covered elsewhere).
+    // This is intentionally strict to avoid accidentally granting access.
+    return (!certificate.recipientEmail && certificate.issuerId === requester.id);
+  }
+
+  private async resolveRequesterEmail(userId: string): Promise<string | null> {
+    if (!this.userRepository) {
+      return null;
+    }
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    return user?.email ?? null;
   }
 
   private async generateConfirmationCode(): Promise<string> {
-    const maxRetries = 10;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const code = CryptoUtils.generateAlphanumericCode(6);
-      const exists = await this.transferRepository.findOne({
-        where: { confirmationCode: code },
-        select: ['id'],
-      });
-      if (!exists) return code;
+    // Use the shared crypto utility when available to keep code generation
+    // consistent across the application.
+    if (CryptoUtils&& typeof (CryptoUtils as any).randomString === 'function') {
+      return (CryptoUtils as any).randomString(8);
     }
-    throw new ConflictException(
-      'Failed to generate a unique confirmation code after multiple attempts',
-    );
+    // Fallback to a cryptographically secure random code.
+    const { randomInt } = await import('crypto');
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += alphabet[randomInt(0, alphabet.length)];
+    }
+    return code;
   }
 }

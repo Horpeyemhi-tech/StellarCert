@@ -20,6 +20,7 @@ export enum TransferStatus {
 
 @Entity('certificate_transfers')
 @Index(['certificateId'])
+@Index(['certificateId', 'status'])
 @Index(['fromEmail'])
 @Index(['toEmail'])
 @Index(['status'])
@@ -31,7 +32,7 @@ export class CertificateTransfer {
   certificateId: string;
 
   @ManyToOne(() => Certificate, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'certificateId' })
+  @JoinColumn({ type: 'certificateId' })
   certificate: Certificate;
 
   @Column()
@@ -46,7 +47,22 @@ export class CertificateTransfer {
   @Column()
   toName: string;
 
-  @Column({
+  @Column({ type: 'decimal', precision: 20, scale: 0, default: '0' })
+  transferFee: string;
+
+  @Column({ default: false })
+  feePaid: boolean;
+
+  @Column({ type: 'timestamp', nullable: true })
+  feePaidAt?: Date;
+
+  @Column({ nullable: true })
+  feePaidBy?: string;
+
+  @Column({ nullable: true })
+  feeTransactionHash?: string;
+
+  @Column( {
     type: 'enum',
     enum: TransferStatus,
     default: TransferStatus.PENDING,
@@ -63,7 +79,7 @@ export class CertificateTransfer {
   confirmationCode?: string;
 
   @Column({ nullable: true })
-  initiatedBy: string;
+  initiatedBy?: string;
 
   @CreateDateColumn()
   initiatedAt: Date;

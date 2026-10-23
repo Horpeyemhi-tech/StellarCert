@@ -2,14 +2,17 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ConflictException,
+  Logger,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
+import { InjectRepository } from '@nestjs/typekeorm';
 import { Repository, EntityManager, ILike } from 'typeorm';
 import { Issuer } from './entities/issuer.entity';
 import { CreateIssuerDto } from './dto/create-issuer.dto';
 import { isValidStellarPublicKey } from './utils/stellar';
 import { IssuerPaginationQueryDto, IPaginatedResult } from './dto/pagination.dto';
 import { IssuerTier } from '../../common/rate-limiting/rate-limit.types';
+import { WebhooksService } from '../webhooks/webhooks.service';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -25,23 +28,83 @@ const ALLOWED_SORT_FIELDS = [
 
 @Injectable()
 export class IssuersService {
+  private readonly logger = new Logger(IssuersService.name);
+
   constructor(
     @InjectRepository(Issuer)
     private readonly issuerRepo: Repository<Issuer>,
+    private readonly webhooksService: WebhooksService,
   ) {}
 
   async createIssuer(dto: CreateIssuerDto) {
     if (!isValidStellarPublicKey(dto.stellarPublicKey)) {
       throw new BadRequestException('Invalid Stellar public key');
     }
+
+    const existing = await this.issuerRepo.findOne({
+      where: { stellarPublicKey: dto.stellarPublicKey },
+    });
+    if (existing) {
+      throw new ConflictException('Issuer with this Stellar public key already exists');
+    }
+
     const issuer = this.issuerRepo.create(dto);
-    return this.issuerRepo.save(issuer);
+    const saved = await this.issuerRepo.save(issuer);
+    await this.emitIssuerEvent('IssuerAddedEvent', saved);
+    return saved;
   }
 
   async removeIssuer(id: string) {
     const issuer = await this.issuerRepo.findOne({ where: { id } });
     if (!issuer) throw new NotFoundException('Issuer not found');
-    return this.issuerRepo.remove(issuer);
+    const removed = await this.issuerRepo.remove(issuer);
+    await this.emitIssuerEvent('IssuerRemovedEvent', removed);
+    return removed;
+  }
+
+  /**
+   * Publish an issuer allow-list lifecycle event so the backend webhook /
+   * indexer layer can react to issuer additions and removals.
+   *
+   * Events are delivered through the webhooks service and additionally recorded
+   * as structured log records to keep the existing API and data compatibility
+   * intact while providing a stable, observable boundary.
+   */
+  private async emitIssuerEvent(
+    event: 'IssuerAddedEvent' | 'IssuerRemovedEvent',
+    issuer: Issuer,
+  ): Promise<void> {
+    const payload = {
+      issuerId: issuer.id,
+      stellarPublicKey: issuer.stellarPublicKey,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.logger.log(JSON.stringify({ event, ...payload }));
+
+    try {
+      if (event === 'IssuerAddedEvent') {
+        await this.webhooksService.emitIssuerAdded(issuer.id, payload);
+      } else {
+        await this.webhooksService.emitIssuerRemoved(issuer.id, payload);
+      }
+    } catch (error) {
+      // Event delivery must never break the primary state-changing operation.
+      this.logger.warn(
+        `Failed to emit ${event} for issuer ${issuer.id}: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  async findByStellarPublicKey(stellarPublicKey: string): Promise<Issuer | null> {
+    if (!isValidStellarPublicKey(stellarPublicKey)) {
+      return null;
+    }
+    return this.issuerRepo.findOne({ where: { stellarPublicKey } });
+  }
+
+  async findById(id: string): Promise<Issuer | null> {
+    return this.issuerRepo.findOne({ where: { id } });
   }
 
   async listIssuers(query: IssuerPaginationQueryDto): Promise<IPaginatedResult<Issuer>> {
@@ -62,8 +125,8 @@ export class IssuersService {
 
     if (query.search) {
       queryBuilder.andWhere(
-        '(issuer.name ILIKE :search OR issuer.stellarPublicKey ILIKE :search)',
-        { search: `%${search}%%` },
+        "(issuer.name ILIKE :search OR issuer.stellarPublicKey ILIKE :search)",
+        { search: `%${query.search}%` },
       );
     }
 

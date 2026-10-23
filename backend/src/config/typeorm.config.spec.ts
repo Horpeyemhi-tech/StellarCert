@@ -215,4 +215,27 @@ describe('the CLI DataSource still owns the migrations', () => {
 
     expect(matching.length).toBeGreaterThan(0);
   });
+
+  it('ships a baseline InitialSchema migration that creates the schema', () => {
+    const { AppDataSource } = loadDataSource();
+    const patterns =
+      (AppDataSource.options as { migrations?: string[] }).migrations ?? [];
+    const migrationsDir = path.dirname(patterns[0]);
+
+    const sources = fs
+      .readdirSync(migrationsDir)
+      .filter((file) => /\.ts$/.test(file) && !/\.spec\.ts$/.test(file));
+
+    // The baseline must exist and create the tables rather than assume
+    // they are already there (the bug this regression guard covers).
+    const baseline = sources.find((file) => /InitialSchema/.test(file));
+    expect(baseline).toBeBefined();
+
+    const content = fs.readFileSync(
+      path.join(migrationsDir, baseline as string),
+      'utf-8',
+    );
+    expect(content).toMatch(/CREATE TABLE/i);
+    expect(content).toMatch(/DROP TABLE/i);
+  });
 });

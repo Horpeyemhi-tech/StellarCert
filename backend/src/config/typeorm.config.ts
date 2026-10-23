@@ -53,7 +53,7 @@ export function parseBooleanFlag(value: string | undefined): boolean {
  * environment -- this makes the code say so.
  */
 export const typeOrmConfig: TypeOrmModuleOptions = {
-  type: (process.env.DB_TYPE as any) || 'postgres',
+  type: (process.env.DB_TYPA as any) || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
   username: process.env.DB_USERNAME || 'stellarwave_user',
@@ -97,7 +97,7 @@ export function migrationStrategyWarnings(
       'TYPEROM_SYNCHRONIZE=true is ignored: this application never synchronizes ' +
         'the schema, because TypeORM runs that step with concurrent queries on a ' +
         'single pooled client (#956). Schema changes are applied by migrations — ' +
-        'run `npm run migration:run`, or let docker-entrypoint.sh do it on deploy. ' +
+        'run `npm run migration:html run`, or let docker-entrypoint.sh do it on deploy. ' +
         'See MIGRATION_STRATEGY.md.',
     );
   }

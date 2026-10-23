@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { randomUUID } from 'crypto';
 
 /**
  * Baseline schema (#955).
@@ -27,15 +28,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * The timestamp prefix (`1700000000000`) is deliberately earlier than
  * `1780272000000` so this baseline always runs first.
  */
+// NOTE: `uuid_generate_v4()` requires the `uuid-ossp` extension, which is not
+// available on all managed Postgres providers (e.g. some RDS/Aurora setups).
+// We therefore generate UUIDs in the application layer instead.
 export class InitialSchema1700000000000 implements MigrationInterface {
   name = 'InitialSchema1700000000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // `@PrimaryGeneratedColumn('uuid')` compiles to `uuid_generate_v4()`; the
-    // driver installs this extension on connect, but a migration that runs
-    // before the driver's first connection still needs it to exist.
-    await queryRunner.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
-
     // ─── enum types ──────────────────────────────────────────────────────────
     // TypeORM derives the type name from "<table>_<column>_enum", so these
     // names must match the entities to stay compatible with TypeORM's metadata.
@@ -66,11 +65,14 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     await queryRunner.query(
       `CREATE TYPE "webhook_subscriptions_events_enum" AS ENUM ('certificate.issued', 'certificate.revoked', 'certificate.verified', 'certificate.expired', 'webhook.test')`,
     );
+    await queryRunner.query(
+      `CREATE TYPE "webhook_logs_status_enum" AS ENUM ('success', 'failed', 'retrying')`,
+    );
 
     // ─── users ───────────────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "users" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "email" character varying NOT NULL,
         "username" character varying,
         "firstName" character varying NOT NULL,
@@ -117,7 +119,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── certificates ────────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "certificates" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "certificateId" character varying NOT NULL,
         "issuerId" uuid NOT NULL,
         "recipientId" character varying,
@@ -189,7 +191,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── certificate_transfers ───────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "certificate_transfers" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "certificateId" uuid NOT NULL,
         "fromEmail" character varying NOT NULL,
         "fromName" character varying NOT NULL,
@@ -222,7 +224,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── verifications ───────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "verifications" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "certificateId" uuid,
         "success" boolean NOT NULL,
         "verifiedAt" TIMESTAMP NOT NULL DEFAULT now(),
@@ -233,7 +235,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── issuers ─────────────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "issuers" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "name" character varying NOT NULL,
         "stellarPublicKey" character varying NOT NULL,
         "description" text,
@@ -255,7 +257,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── audit_logs ──────────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "audit_logs" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "action" "audit_logs_action_enum" NOT NULL,
         "resourceType" "audit_logs_resourcetype_enum" NOT NULL,
         "resourceId" character varying,
@@ -301,7 +303,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── metadata_schemas ────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "metadata_schemas" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "name" character varying NOT NULL,
         "description" text,
         "version" character varying NOT NULL,
@@ -329,7 +331,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── notification_preferences ────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "notification_preferences" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "user_id" uuid NOT NULL,
         "in_app_enabled" boolean NOT NULL DEFAULT true,
         "info_enabled" boolean NOT NULL DEFAULT true,
@@ -346,7 +348,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── notifications ───────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "notifications" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "user_id" uuid NOT NULL,
         "type" "notifications_type_enum" NOT NULL DEFAULT 'info',
         "title" character varying NOT NULL,
@@ -375,7 +377,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── webhook_subscriptions ───────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "webhook_subscriptions" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "issuerId" uuid NOT NULL,
         "url" character varying NOT NULL,
         "events" "webhook_subscriptions_events_enum" array NOT NULL DEFAULT '{}',
@@ -390,7 +392,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     // ─── webhook_logs ────────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE TABLE "webhook_logs" (
-        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "id" uuid NOT NULL,
         "subscriptionId" uuid NOT NULL,
         "event" character varying NOT NULL,
         "payload" jsonb NOT NULL,
@@ -399,6 +401,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
         "duration" integer,
         "attempt" integer NOT NULL DEFAULT 1,
         "isSuccess" boolean NOT NULL DEFAULT false,
+        "status" "webhook_logs_status_enum" NOT NULL DEFAULT 'success',
         "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
         CONSTRAINT "PK_webhook_logs_id" PRIMARY KEY ("id")
       )
@@ -426,11 +429,17 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     await queryRunner.query(
       `ALTER TABLE "webhook_logs" ADD CONSTRAINT "FK_webhook_logs_subscriptionId" FOREIGN KEY ("subscriptionId") REFERENCES "webhook_subscriptions"("id") ON DELETE NO ACTION ON UPDATE NO ACTION`,
     );
+    await queryRunner.query(
+      `ALTER TABLE "webhook_logs" ADD CONSTRAINT "UQ_webhook_logs_id" UNIQUE ("id")`,
+    );
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     // Dropped in reverse dependency order: children before parents, and every
     // reference to an enum type removed before the type itself.
+    await queryRunner.query(
+      `ALTER TABLE "webhook_logs" DROP CONSTRAINT "UQ_webhook_logs_id"`,
+    );
     await queryRunner.query(
       `ALTER TABLE "webhook_logs" DROP CONSTRAINT "FK_webhook_logs_subscriptionId"`,
     );
@@ -469,6 +478,7 @@ export class InitialSchema1700000000000 implements MigrationInterface {
     await queryRunner.query(
       `DROP TYPE IF EXISTS "webhook_subscriptions_events_enum"`,
     );
+    await queryRunner.query(`DROP TYPE IF EXISTS "webhook_logs_status_enum"`);
     await queryRunner.query(`DROP TYPE IF EXISTS "notifications_type_enum"`);
     await queryRunner.query(
       `DROP TYPE IF EXISTS "audit_logs_resourcetype_enum"`,

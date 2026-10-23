@@ -7,7 +7,7 @@ import {
   IsEnum,
   IsBoolean,
 } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@intest/swagger';
 import { Transform, Type } from 'class-transformer';
 import { UserRole, UserStatus } from '../entities/user.entity';
 
@@ -54,6 +54,21 @@ export class PaginationQueryDto {
   @IsOptional()
   @IsEnum(['ASC', 'DESC'])
   sortOrder?: 'ASC' | 'DESC' = 'DESC';
+
+  /**
+   * Returns the zero-based row offset for this page.
+   *
+   * Pagination is 1-based throughout the API: page=1 yields offset 0.
+   * This helper is the single source of truth for translating a
+   * 1-based page number into a DB offset, so all repositories and
+   * services stay in sync.
+   */
+  getOffset(): number {
+    const page = this.page ?? 1;
+    const limit = this.limit ?? 10;
+    return Math.max(0, page - 1) * limit;
+  }
+
 }
 
 export class UserFilterDto extends PaginationQueryDto {

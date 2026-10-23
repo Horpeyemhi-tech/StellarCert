@@ -10,10 +10,10 @@ across environments so that `synchronize: true` is **never used in production**.
 ## Environment Rules
 
 | Environment | `synchronize` | Migration source |
-|-------------|---------------|-----------------|
-| development | `false`       | `npm run migration:run` |
-| test        | `false`       | `npm run migration:run` |
-| production  | `false`       | `npm run migration:run` |
+|-------------|---------------|------------------|
+| development | `false`      | `npm run migration:run` |
+| test        | `false`      | `npm run migration:run` |
+| production  | `false`      | `npm run migration:run` |
 
 > **Important:** `synchronize: true` auto-alters tables on start-up and can
 > cause irreversible data loss. It must remain `false` in all environments.
@@ -28,12 +28,13 @@ accident. Two reasons:
 
 1. The data-loss risk described above.
 2. `synchronize` is the only step TypeORM performs during `initialize()` that
-   issues **concurrent queries on a single pooled client** — the schema
-   comparison fans out over tables, columns and drifted indexes with
-   `Promise.all`. That is what makes `pg` print
-   `Calling client.query() when the client is already executing a query is
-   deprecated`, which becomes a hard error in `pg@9`, and the application
-   cannot serialise it because it happens inside TypeORM (#956).
+issues **concurrent queries on a single pooled client** — the schema
+comparison fans out over tables, columns and drifted indexes with
+
+Promise.all`. That is what makes `pg` print
+`Calling client.query() when the client is already executing a query is
+deprecated`, which becomes a hard error in `pg@9`, and the application
+cannot serialise it because it happens inside TypeORM (#956).
 
 `TYPEORM_SYNCHRONIZE` is therefore ignored: when it is set to `true` the app
 logs a warning at boot and continues with `synchronize: false`. It also no
@@ -50,6 +51,33 @@ longer disables `migrationsRun`, so migrations always remain the schema source.
 The application connects and serves; it does not own the schema. `migrationsRun`
 in the Nest configuration uses the same migrations, so a fresh database is
 provisioned on boot where no entrypoint runs first.
+
+---
+
+## Baseline (InitialSchema) migration
+
+The first migration in the chain is `InitialSchema`. It creates every table,
+enum, index and foreign key declared by the `*.entity.ts` files, so
+`migration:run` can provision an empty database from scratch. Later migrations
+(e.g. `AddPasswordResetLookupAndRecipientName`) are additive `ALTER TABLE`
+steps that assume the baseline has already run.
+
+Rules for the baseline:
+
+- It must be the **oldest** migration (timestamp-ordered). TypeORM applies
+migrations in ascending timestamp order, and a fresh database must run it
+first.
+- It must be generated from the entities (`npm run migration:generate`),
+not hand-written, so it stays in sync with the entity definitions.
+- It must have a complete `down()` that drops everything it created, so
+migration rollback and test database resets remain reproducible.
+- It must be committed. A fresh clone must be able to run `migration:run`
+without `TYPORM_SYNCHRONIZE`.
+
+The regression test in
+`backend/src/database/migrations/initial-schema.migration.spec.ts` asserts that
+the baseline exists, creates the core tables, and that every entity table is
+covered by the migration chain.
 
 ---
 
@@ -91,7 +119,7 @@ The CI pipeline runs the following step on every pull request that touches
 `backend/src/**`:
 
 ```yaml
-- name: Check pending migrations
+-Name: Check pending migrations
   run: |
     npm run migration:generate -- src/database/migrations/ci-check --check
 ```
@@ -105,6 +133,7 @@ have no corresponding migration file, failing the build before deployment.
 
 ```
 <timestamp>-<PascalCaseDescription>.ts
+
 ```
 
 Example: `1714000000000-AddVerificationTokenToUser.ts`

@@ -533,7 +533,6 @@ export class SorobanService implements OnModuleInit, IssuerKeypairProvider {
       this.logger.error(`Revoke certificate ${id} failed: ${message}`);
       return null;
     }
-  }
 
   /**
    * Poll for transaction confirmation

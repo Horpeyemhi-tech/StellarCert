@@ -60,6 +60,7 @@ describe('CertificateService', () => {
   const sorobanService = {
     isConfigured: jest.fn().mockReturnValue(false),
     issueCertificate: jest.fn(),
+    reissueCertificate: jest.fn(),
   };
   const issuersService = {
     incrementCertificateCount: jest.fn().mockResolved(undefined),
@@ -341,15 +342,20 @@ describe('CertificateService', () => {
     });
   });
 
-  describe('issue (#incrementCertificateCount wiring)', () => {
-    const issuerId = 'issuer-1';
-    const dto = {
-      issuerId: issuerId,
+  describe('reissue_certificate event topic', () => {
+    const parentCertificate = {
+      id: 'parent-cert-1',
+      verificationCode: 'PARENT01',
+      issuerId: 'issuer-1',
+      issuerStellarAddress: 'GISSUER',
       recipientName: 'Alice',
       recipientEmail: 'alice@example.com',
+      recipientStellarAddress: 'GRECIPIENT',
       title: 'Cert 1',
       courseName: 'Course 1',
-    } as any;
+      status: CertificateStatus.ACTIVE,
+      expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    } as unknown as Certificate;
 
     let certificate: Certificate;
 

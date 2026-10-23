@@ -194,8 +194,151 @@ export class CertificateIssuanceService {
   }
 
   /**
+   * Reissue an existing certificate, superseding the parent.
+   *
+   * This is fundamentally different from a fresh issuance: the new certificate
+   * carries a parent linkage and the old certificate is superseded. On-chain
+   * we must emit a distinct `"reissued"` topic (carrying the old id / parent
+   * linkage) so indexers can distinguish a reissue from a fresh issuance and
+   * avoid double-counting issuance metrics.
+   */
+  async reissue(
+    parentId: string,
+    createCertificateDto: CreateCertificateDto,
+  ): Promise<ReissueResult> {
+    const parent = await this.certificateRepository.findOne({
+      where: { id: parentId },
+    });
+    if (!parent) {
+      throw new NotFoundException(`Certificate ${parentId} not found`);
+    }
+
+    if (parent.status === 'revoked') {
+      throw new BadRequestException(
+        `Cannot reissue certificate ${parentId}: parent is revoked`,
+      );
+    }
+
+    if (
+      createCertificateDto.metadataSchemaId &&
+      createCertificateDto.metadata
+    ) {
+      const validationResult = await this.metadataSchemaService.validate(
+        createCertificateDto.metadataSchemaId,
+        createCertificateDto.metadata,
+      );
+      if (!validationResult.valid) {
+        throw new ConflictException({
+          message: 'Certificate metadata failed schema validation',
+          errors: validationResult.errors,
+          schemaId: validationResult.schemaId,
+          schemaVersion: validationResult.schemaVersion,
+        });
+      }
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    let savedCertificate: Certificate;
+
+    try {
+      const certificateId = await this.generateCertificateId();
+      const verificationCode =
+        createCertificateDto.verificationCode ||
+        (await this.generateVerificationCode());
+
+      const certificate = queryRunner.manager.create(Certificate, {
+        ...createCertificateDto,
+        certificateId,
+        expiresAt:
+          createCertificateDto.expiresAt || this.calculateDefaultExpiry(),
+        verificationCode,
+        isDuplicate: false,
+        parentCertificateId: parent.id,
+      });
+
+      savedCertificate = await queryRunner.manager.save(certificate);
+
+      // Mark the parent as superseded within the same transaction.
+      parent.status = 'superseded' as any;
+      parent.supersededById = savedCertificate.id;
+      await queryRunner.manager.save(parent);
+
+      // Emit the distinct on-chain `"reissued"` topic carrying the
+      // old_id / parent linkage. This must not reuse the `"issued"` topic.
+      if (this.sorobanService?.isConfigured()) {
+        try {
+          const txHash = await this.sorobanService.reissueCertificate(
+            savedCertificate.id,
+            parent.id,
+            savedCertificate.issuerStellarAddress,
+            savedCertificate.recipientStellarAddress,
+            savedCertificate.verificationCode,
+            Math.floor(new Date(savedCertificate.expiresAt).getTime() / 1000),
+          );
+          savedCertificate.stellarTransactionHash = txHash;
+          savedCertificate = await queryRunner.manager.save(savedCertificate);
+        } catch (chainError) {
+          await queryRunner.rollbackTransaction();
+          this.logger.error(
+            `On-chain reissuance failed for certificate ${savedCertificate.id}; DB rolled back: ${chainError.message}`,
+            chainError.stack,
+          );
+          throw new ServiceUnavailableException({
+            message:
+              'Failed to reissue certificate on-chain; no certificate record was persisted',
+            cause: chainError.message,
+          });
+        }
+      }
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `Certificate reissued: ${savedCertificate.id} superseding ${parent.id}`,
+      );
+
+      // Trigger distinct reissue webhook so downstream consumers can
+      // distinguish a reissue from a fresh issuance.
+      await this.webhooksService.triggerEvent(
+        WebhookEvent.CERTIFICATE_REISSUED,
+        savedCertificate.issuerId,
+        {
+          id: savedCertificate.id,
+          oldId: parent.id,
+          parentCertificateId: parent.id,
+          recipientEmail: savedCertificate.recipientEmail,
+          recipientName: savedCertificate.recipientName,
+          title: savedCertificate.title,
+          issuedAt: savedCertificate.issuedAt,
+          status: savedCertificate.status,
+        },
+      );
+
+      return {
+        id: savedCertificate.id,
+        parentCertificateId: parent.id,
+        stellarTransactionHash: savedCertificate.stellarTransactionHash,
+      };
+    } catch (error) {
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      this.logger.error(
+        `Failed to reissue certificate: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
    * Re-attempt on-chain issuance for a certificate that is missing a
-   * `stellarTransactionHash` (e.g. an orphaned record from a prior failure).
+   * `stellarTransactionHash`.
    */
   async syncChain(id: string): Promise<SyncChainResult> {
     const certificate = await this.certificateRepository.findOne({ where: { id } });
@@ -205,7 +348,7 @@ export class CertificateIssuanceService {
 
     if (certificate.stellarTransactionHash) {
       return {
-        id,
+        id: certificate.id,
         alreadySynced: true,
         stellarTransactionHash: certificate.stellarTransactionHash,
       };
@@ -213,7 +356,7 @@ export class CertificateIssuanceService {
 
     if (!this.sorobanService?.isConfigured()) {
       throw new ServiceUnavailableException(
-        'Soroban is not configured; cannot sync chain issuance',
+        'Stellar network is not configured; cannot sync on-chain',
       );
     }
 
@@ -241,7 +384,7 @@ export class CertificateIssuanceService {
     this.logger.log(`Synched certificate ${id} to chain ${txHash}`);
 
     return {
-      id,
+      id: certificate.id,
       alreadySynced: false,
       stellarTransactionHash: txHash,
     };
@@ -279,18 +422,7 @@ export class CertificateIssuanceService {
    * and retries on collision against the unique DB constraint.
    */
   private async generateVerificationCode(): Promise<string> {
-    const maxRetries = 10;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const code = CryptoUtils.generateAlphanumericCode(8);
-      const exists = await this.certificateRepository.findOne({
-        where: { verificationCode: code },
-        select: ['id'],
-      });
-      if (!exists) return code;
-    }
-    throw new ConflictException(
-      'Failed to generate a unique verification code after multiple attempts',
-    );
+    return CryptoUtils.generateVerificationCode();
   }
 
   /**

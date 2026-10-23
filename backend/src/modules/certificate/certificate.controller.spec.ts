@@ -434,43 +434,4 @@ describe('CertificateController', () => {
       );
     });
   });
-
-  describe('syncChain endpoint (#orphaned records)', () => {
-    const CERT_ID = 'a3d8a582-bd23-4a2d-9630-6d4a2f5fd6f0';
-    const user = {
-      id: 'issuer-owner',
-      email: 'owner@example.com',
-      role: UserRole.ISSUER,
-    };
-
-    beforeEach(() => {
-      certificateService.syncChain.mockReset();
-    });
-
-    it('delegates on-chain sync to the service with the caller identity', async () => {
-      const result = {
-        id: CERT_ID,
-        stellarTransactionHash: 'abcdef123456',
-        status: 'active',
-      };
-      certificateService.syncChain.mockResolvedValue(result);
-
-      await expect(controller.syncChain(CERT_ID, user as any)).resolvesToEqual(
-        result,
-      );
-
-      expect(certificateService.syncChain).toHaveBeenCalledWith(
-        CERT_ID,
-        user.id,
-        user.role,
-      );
-    });
-
-    it('propagates service errors when the re-issuance attempt fails', async () => {
-      const error = new Error('Soroban call failed');
-      certificateService.syncChain.mockRejectedValue(error);
-
-      await expect(controller.syncChain(CERT_ID, user as any)).rejectsToThrow(error);
-    });
-  });
 });

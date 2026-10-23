@@ -425,6 +425,14 @@ export class CertificateTransferService {
       `Transfer ${transferId} rejected for certificate ${transfer.certificateId}`,
     );
 
-    return savedTransfer;
+    if (requester.role === UserRole.ADMIN) {
+      return pendingTransfers;
+    }
+
+    return pendingTransfers.filter(
+      (t) =>
+        t.initiatedBy === requester.id ||
+        t.certificate?.issuerId === requester.id,
+    );
   }
 }

@@ -293,6 +293,18 @@ The system uses the Levenshtein distance algorithm for fuzzy matching:
 - ,**Pattern Detection**: Identifies suspicious duplicate patterns
 - **Manual Review**: High-risk duplicates require manual review
 
+### Transfer Visibility and Authorization
+
+Duplicate detection reports and override records can reference certificate transfers. Transfer records contain party addresses, fees, and free-text memos, and they are treated as private data.
+
+The transfer query entry points (`get_transfer`, `get_transfer_history_public`, `get_pending_transfers_public`) enforce the same authorization pattern as `get_pending_request`:
+
+- The caller must be the transfer `sender` or `recipient` (corresponding to the certificate `owner` and the transfer target), or an admin.
+- Unlisted callers receive an authorization error and do not receive transfer details.
+- The function names are preserved for API compatibility, but the `_public` suffix no longer implies anonymous access. Clients that previously relied on unauthenticated access must authenticate as a participant or admin.
+
+Admin duplicate reports that include transfer details must also require admin authorization at the report endpoint boundary.
+
 ## Testing
 
 ### Unit Tests
@@ -304,6 +316,7 @@ The system uses the Levenshtein distance algorithm for fuzzy matching:
 - **API Tests**: End-to-end testing of duplicate detection endpoints
 - **Database Tests**: Integration with TypeORM and PostgreSQL
 - **Frontend Tests**: UI integration for duplicate warnings
+- **Transfer Authorization Tests**: Regression coverage verifying that `get_transfer`, `get_transfer_history_public`, and `get_pending_transfers_public` reject unparticipating callers and admin-only reports reject non-admins.
 
 ### Performance Tests
 - **Load Testing**: High-volume duplicate detection scenarios
@@ -343,6 +356,7 @@ The system uses the Levenshtein distance algorithm for fuzzy matching:
 2. **Missing Duplicates**: Enable fuzzy matching or lower thresholds
 3. **Performance Issues**: Check database indexes and query optimization
 4. **Override Problems**: Verify user permissions and workflow configuration
+5. **Transfer Access Denied**: Ensure the caller is a transfer participant or admin; the `_public` views are no longer anonymous.
 
 ### Debug Mode
 

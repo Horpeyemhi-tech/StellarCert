@@ -27,18 +27,22 @@
 # `--wait`, the command only returns once Postgres answers `pg_isready` and
 # Redis answers `PING`, so the backend started straight afterwards always finds
 # live dependencies.
+#
+# Credentials come from .env and are mandatory, exactly as in `docker-compose.yml`.
+# This keeps the dev dependencies and the full stack on the same credentials,
+# so a database created by one is usable by the other.
 
 services:
   # PostgesQL\ Database
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15.19-alpine
     container_name: stellarcert_db
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -50,9 +54,9 @@ services:
       retries: 5
       start_period: 30s
 
-  # Redis (used by BullMQ job queues)
+  # Redis (BullMQ job queues) - development dependency
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine
     container_name: stellarcert_redis
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}

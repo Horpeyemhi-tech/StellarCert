@@ -7,15 +7,28 @@ import {
 } from 'typeorm';
 import { AuditAction, AuditResourceType } from '../constants';
 
+/**
+ * Retention / deletion semantics for audit evidence:
+ * - Audit logs are immutable evidence and are not hard-deleted by user-initiated
+ *   erasure requests.
+ * - PII contained in audit records (userEmail, ipAddress, userAgent, resourceData,
+ *   changes, metadata) is subject to anonymization once the retention window
+ *   has elapsed and no legal hold applies.
+ * - Anonymization is tracked via `anonymizedAt`, `retentionExpiresAt`, and
+ *   `legalHoldId` so the workflow is auditable and idempotent.
+ */
 @Entity('audit_logs')
 @Index(['userId'])
 @Index(['action'])
 @Index(['resourceType'])
 // @Index(['resourceId']) // Keep commented for now
-@Index(['createdAt'])
+@Index(['timestamp'])
 @Index(['correlationId'])
 @Index(['ipAddress'])
 @Index(['status'])
+@Index(['legalHoldId'])
+@Index(['anonymizedAt'])
+@Index(['retentionExpiresAt'])
 export class AuditLog {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -122,6 +135,9 @@ export class AuditLog {
   })
   timestamp: number;
 
+  // Note: `timestamp` is the hot column for search/sort/purge and is
+  // indexed at the entity level above. `createdAt` is kept for data
+  // compatibility but is no longer indexed.
   @CreateDateColumn()
   createdAt: Date;
 }

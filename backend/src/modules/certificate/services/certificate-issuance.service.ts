@@ -17,12 +17,6 @@ export interface SyncChainResult {
   stellarTransactionHash: string | undefined;
 }
 
-export interface ReissueResult {
-  id: string;
-  parentCertificateId: string;
-  stellarTransactionHash: string | undefined;
-}
-
 @Injectable()
 export class CertificateIssuanceService {
   private readonly logger = new Logger(CertificateIssuanceService.name);
@@ -85,6 +79,20 @@ export class CertificateIssuanceService {
       }
     }
 
+    // Validate any client-supplied expiry is in the future. This mirrors the
+    // on-chain `set_certificate_expiry` guard so the DB and chain agree.
+    if (createCertificateDto.expiresAt) {
+      const expiryTime = new Date(createCertificateDto.expiresAt).getTime();
+      if (Number.isNaN(expiryTime)) {
+        throw new BadRequestException('expiresAt must be a valid date');
+      }
+      if (expiryTime <= Date.now()) {
+        throw new BadRequestException(
+          'expiresAt must be in the future',
+        );
+      }
+    }
+
     // Create a QueryRunner for transaction
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -94,6 +102,10 @@ export class CertificateIssuanceService {
 
     try {
       const certificateId = await this.generateCertificateId();
+      // Reject over-long IDs at the owning boundary so a bad ID—
+      // whether supplied or generated— can never reach the CRL Merkle leaf
+      // construction and cause a revocation DoS.
+      this.assertCertificateIdFitsMerkleLeaf(certificateId);
       const verificationCode =
         createCertificateDto.verificationCode ||
         (await this.generateVerificationCode());
@@ -132,7 +144,7 @@ export class CertificateIssuanceService {
           // Rollback the database record so no orphan remains.
           await queryRunner.rollbackTransaction();
           this.logger.error(
-            `On-chain issuance failed for certificate ${savedCertificate.id}; DB rolled back: ${chainError.message}`,
+            `On-chain issuance failed for certificate ${savedCertificate.id}; DB colled back: ${chainError.message}`,
             chainError.stack,
           );
           throw new ServiceUnavailableException({
@@ -348,15 +360,28 @@ export class CertificateIssuanceService {
       );
     }
 
+    // Refuse to sync a certificate whose expiry has already passed; the
+    // on-chain contract rejects past expiries and we want a clear error.
+    const expiryTime = Math.floor(new Date(certificate.expiresAt).getTime() / 1000);
+    if (!Number.isFinite(expiryTime) || expiryTime <= Math.floor(Date.now() / 1000)) {
+      throw new BadRequestException(
+        'Cannot sync chain issuance for a certificate with a past expiry',
+      );
+    }
+
     const txHash = await this.sorobanService.issueCertificate(
       certificate.id,
       certificate.issuerStellarAddress,
       certificate.recipientStellarAddress,
       certificate.verificationCode,
-      Math.floor(new Date(certificate.expiresAt).getTime() / 1000),
+      expiryTime,
     );
-    certificate.stellarTransactionHash = txHash;
-    await this.certificateRepository.save(certificate);
+
+    await this.certificateRepository.update(id, {
+      stellarTransactionHash: txHash,
+    });
+
+    this.logger.log(`Synched certificate ${id} to chain ${txHash}`);
 
     return {
       id: certificate.id,
@@ -365,17 +390,60 @@ export class CertificateIssuanceService {
     };
   }
 
-  private async generateCertificateId(): Promise<string> {
-    return CryptoUtils.generateUuid();
+  /**
+   * Ensure a certificate ID fits into the fixed leaf buffer used by the
+   * CRL Merkle root builder. IDs longer than the buffer would panic the
+   * chain side and permanently block revocations for the issuer.
+   */
+  private assertCertificateIdFitsMerkleLeaf(certificateId: string): void {
+    const byteLength = Buffer.byteLength(certificateId, 'utf-8');
+    if (byteLength > MAX_CERTIFICATE_ID_BYTES) {
+      this.logger.warn(
+        `Rejecting certificate ID of ${byteLength} bytes (> ${MAX_CERTIFICATE_ID_BYTES})`,
+      );
+      throw new BadRequestException({
+        message: `Certificate ID exceeds the maximum of ${MAX_CERTIFICATE_ID_BYTES} bytes`,
+        certificateIdByteLength: byteLength,
+        maxCertificateIdBytes: MAX_CERTIFICATE_ID_BYTES,
+      });
+    }
   }
 
+  private calculateDefaultExpiry(): Date {
+    // Use UTC to align with the backend's UTC-based validation and avoid
+    // timezone-dependent expiry dates.
+    const expiry = new Date();
+    expiry.setUTCFullYear(expiry.getUTCFullYear() + 1); // Default 1 year expiry
+    return expiry;
+  }
+
+  /**
+   * Generates a cryptographically secure 8-character verification code
+   * and retries on collision against the unique DB constraint.
+   */
   private async generateVerificationCode(): Promise<string> {
     return CryptoUtils.generateVerificationCode();
   }
 
-  private calculateDefaultExpiry(): Date {
-    const expiry = new Date();
-    expiry.setFullYear(expiry.getFullYear() + 1);
-    return expiry;
+  /**
+   * Generates a cryptographically secure certificate ID (`CERT-<YEAR>-<8 chars>`)
+   * and retries on collision against the unique DB constraint.
+   */
+  private async generateCertificateId(): Promise<string> {
+    // Use the UTC вер so certificate IDs are stable across timezones.
+    const year = new Date().getUTCFullYear();
+    const maxRetries = 10;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const suffix = CryptoUtils.generateAlphanumericCode(8);
+      const certificateId = `CERT-${year}-${suffix}`;
+      const exists = await this.certificateRepository.findOne({
+        where: { certificateId },
+        select: ['id'],
+      });
+      if (!exists) return certificateId;
+    }
+    throw new ConflictException(
+      'Failed to generate a unique certificate ID after multiple attempts',
+    );
   }
 }

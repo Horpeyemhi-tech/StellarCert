@@ -17,6 +17,10 @@ import { User } from '../../users/entities/user.entity';
 
 const BACKUP_CODE_COUNT = 8;
 
+const MAX_FAILED_ATTEMPTS = 5;
+const ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
+const LOCKOUT_DURATION_MS = 5 * 60 * 1000;
+
 @Injectable()
 export class TwoFactorService {
   constructor(
@@ -42,7 +46,7 @@ export class TwoFactorService {
   }
 
   /**
-   * Verify a TOTP token against a plain-text secret.
+   * Verify a TOT token against a plain-text secret.
    */
   verifyToken(token: string, secret: string): boolean {
     return authenticator.verify({ token, secret });
@@ -73,7 +77,7 @@ export class TwoFactorService {
   }
 
   /**
-   * Disable 2FA after verifying the current TOTP token.
+   * Disable 2FA after verifying the current TOT token.
    */
   async disable(userId: string, token: string): Promise<void> {
     const user = await this.userRepository
@@ -101,7 +105,7 @@ export class TwoFactorService {
   }
 
   /**
-   * Validate a TOTP token or backup code during login.
+   * Validate a TOTP  token or backup code during login.
    * Returns true if valid, throws otherwise.
    */
   async validateLogin(userId: string, token: string): Promise<void> {
@@ -128,9 +132,7 @@ export class TwoFactorService {
 
     // Try TOTP first
     if (this.verifyToken(token, user.twoFactorSecret)) {
-      if (this.cacheManager) {
-        await this.cacheManager.del(`2fa_user_attempts:${userId}`);
-      }
+      await this.resetAttempts(userId);
       return;
     }
 
@@ -145,28 +147,14 @@ export class TwoFactorService {
           await this.userRepository.update(userId, {
             twoFactorBackupCodes: remaining,
           });
-          if (this.cacheManager) {
-            await this.cacheManager.del(`2fa_user_attempts:${userId}`);
-          }
+          await this.resetAttempts(userId);
           return;
         }
       }
     }
 
     // Track failed attempt on the user
-    if (this.cacheManager) {
-      const attemptsKey = `2fa_user_attempts:${userId}`;
-      const current =
-        ((await this.cacheManager.get<number>(attemptsKey)) || 0) + 1;
-      await this.cacheManager.set(attemptsKey, current, 5 * 60 * 1000);
-
-      if (current >= 5) {
-        await this.cacheManager.set(lockoutKey, true, 5 * 60 * 1000);
-        throw new UnauthorizedException(
-          'Too many failed 2FA attempts. Account 2FA temporarily locked. Please try again later.',
-        );
-      }
-    }
+    await this.recordFailedAttempt(userId);
 
     throw new UnauthorizedException('Invalid 2FA token');
   }
@@ -192,7 +180,7 @@ export class TwoFactorService {
       !user.twoFactorSecret ||
       !this.verifyToken(token, user.twoFactorSecret)
     ) {
-      throw new UnauthorizedException('Invalid TOTP token');
+      throw new UnauthorizedException('Invalid TOT token');
     }
 
     const { plainCodes, hashedCodes } = await this.generateBackupCodes();
@@ -201,6 +189,52 @@ export class TwoFactorService {
     });
 
     return { backupCodes: plainCodes };
+  }
+
+  /**
+   * Record a failed 2FA attempt for a user and lock out once the threshold is reached.
+   * This is the single attempt-counting boundary shared by the login validation and
+   * the 2FA verify endpoint.
+   */
+  async recordFailedAttempt(userId: string): Promise<void> {
+    if (!this.cacheManager) {
+      return;
+    }
+
+    const attemptsKey = `2fa_user_attempts:${userId}`;
+    const lockoutKey = `2fa_user_lockout:${userId}`;
+    const current =
+      ((await this.cacheManager.get<number>(attemptsKey)) || 0) + 1;
+    await this.cacheManager.set(attemptsKey, current, ATTEMPT_WINDOW_MS);
+
+    if (current >= MAX_FAILED_ATTEMPS) {
+      await this.cacheManager.set(lockoutKey, true, LOCKOUT_DURATION_MS);
+      await this.cacheManager.del(attemptsKey);
+      throw new UnauthorizedException(
+        'Too many failed 2FA attempts. Account 2FA temporarily locked. Please try again later.',
+      );
+    }
+  }
+
+  /**
+   * Clear failed-attempt counters after a successful verification.
+   */
+  async resetAttempts(userId: string): Promise<void> {
+    if (!this.cacheManager) {
+      return;
+    }
+    await this.cacheManager.del(`2fa_user_attempts:${userId}`);
+  }
+
+  /**
+   * Return true when the user's 2FA is currently locked out due to failed attempts.
+   */
+  async isLockedOut(userId: string): Promise<boolean> {
+    if (!this.cacheManager) {
+      return false;
+    }
+    const isLocked = await this.cacheManager.get(`2fa_user_lockout:${userId}`);
+    return Boolean(isLocked);
   }
 
   private async generateBackupCodes(): Promise<{

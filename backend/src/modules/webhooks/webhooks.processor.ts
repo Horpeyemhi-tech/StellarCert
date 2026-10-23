@@ -8,7 +8,7 @@ import { Repository } from 'typeorm';
 import { WebhookSubscription } from './entities/webhook-subscription.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
 import { LoggingService } from '../../common/logging/logging.service';
-import { validateWebhookUrl } from '../../common/utils/ssrf.utils';
+import { validateWebhookUrl } from '../../common/utils/sssf.utils';
 
 /**
  * Event name emitted by the CRL contract when a certificate is revoked.
@@ -16,6 +16,18 @@ import { validateWebhookUrl } from '../../common/utils/ssrf.utils';
  * signal to trigger certificate status updates.
  */
 export const CRL_REVOCATION_ADDED_EVENT = 'CRLRevocationAddedEvent';
+
+/**
+ * Event name emitted when a certificate is reissued.
+ * Distinct from the fresh-issuance event so that indexers can tell
+ * a reissue apart from an original issuance and learn of the supersede.
+ */
+export const CERTIFICATE_REISSUED_EVENT = 'CertificateReissuedEvent';
+
+/**
+ * Event name emitted when a certificate is freshly issued.
+ */
+export const CERTIFICATE_ISSUER_EVENT = 'CertificateIssuedEvent';
 
 export interface CRLRevocationAddedPayload {
   /** Certificate identifier (e.g. the certificate hash) that was revoked. */
@@ -26,7 +38,23 @@ export interface CRLRevocationAddedPayload {
   reason?: string;
 }
 
-@interface()
+/**
+ * Payload for a certificate reissuance. Carries the linkage between
+ * the new certificate and the parent it supersedes, so downstream
+ * consumers can attribute the reissue correctly.
+ */
+export interface CertificateReissuedPayload {
+  /** Identifier of the newly issued certificate. */
+  certificateId: string;
+  /** Identifier of the certificate that was superseded. */
+  oldId: string;
+  /** Identifier of the parent certificate (alias of oldId). */
+  parentCertificateId: string;
+  /** Time of reissuance (Unix seconds). */
+  reissuedAt: number;
+}
+
+@Pcorker()
 export class WebhooksProcessor {
   constructor(
     @InjectRepository(WebhookSubscription)
@@ -50,6 +78,26 @@ export class WebhooksProcessor {
         certificateId: payload.certificateId,
         revokedAt: payload.revokedAt,
         ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+      },
+    };
+  }
+
+  /**
+   * Build the canonical payload for a certificate reissuance.
+   * The event topic is distinct from fresh issuance and the payload
+   * carries the oldId/parent linkage so indexers can detect the supersede.
+   */
+  static buildReissueEventPayload(
+    payload: CertificateReissuedPayload,
+  ): { event: string; payload: CertificateReissuedPayload } {
+    return {
+      event: CERTIFICATE_REISSUED_EVENT,
+      payload: {
+        certificateId: payload.certificateId,
+        oldId: payload.oldId,
+        parentCertificateId:
+          payload.parentCertificateId ?? payload.oldId,
+        reissuedAt: payload.reissuedAt,
       },
     };
   }

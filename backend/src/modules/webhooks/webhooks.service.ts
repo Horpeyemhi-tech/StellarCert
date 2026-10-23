@@ -3,8 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeiorm';
+import { Repository } from 'typeiorm';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import * as crypto from 'crypto';
@@ -13,6 +13,18 @@ import {
   WebhookSubscription,
   WebhookEvent,
 } from './entities/webhook-subscription.entity';
+
+/**
+ * Issue: state-changing certificate/issuer operations must emit events so the
+ * backend webhook/indexer layer can react to them. These event names are the
+ * canonical identifiers published by the webhooks service.
+ */
+export enum CertificateWebhookEvent {
+  CertificateMetadataUpdated = 'certificate.metadata.updated',
+  CertificateExpirySet = 'certificate.expiry.set',
+  IssuerAdded = 'issuer.added',
+  IssuerRemoved = 'issuer.removed',
+}
 import { WebhookLog } from './entities/webhook-log.entity';
 import { CreateWebhookSubscriptionDto } from './dto/create-webhook-subscription.dto';
 import { LoggingService } from '../../common/logging/logging.service';
@@ -21,7 +33,7 @@ import { validateWebhookUrl } from '../../common/utils/ssrf.utils';
 export type SanitizedWebhookSubscription = Omit<
   WebhookSubscription,
   'secret' | 'secretHash'
-> & { hasSecret: boolean };
+> & { hasSecret: boolean };
 
 export type CreatedWebhookSubscription = SanitizedWebhookSubscription & {
   /** Plaintext HMAC secret, revealed only on creation (#719). */
@@ -160,13 +172,52 @@ export class WebhooksService {
     await this.subscriptionRepository.remove(subscription);
   }
 
-  // BROADCAST XVENT
+  // CERTIFICATE / ISSUER STATE-CHANGE EVENTS
+  async emitCertificateMetadataUpdated(
+    issuerId: string,
+    payload: any,
+  ): Promise<void> {
+    await this.triggerEvent(
+      CertificateWebhookEvent.CertificateMetadataUpdated as unknown as WebhookEvent,
+      issuerId,
+      payload,
+    );
+  }
+
+  async emitCertificateExpirySet(
+    issuerId: string,
+    payload: any,
+  ): Promise<void> {
+    await this.triggerEvent(
+      CertificateWebhookEvent.CertificateExpirySet as unknown as WebhookEvent,
+      issuerId,
+      payload,
+    );
+  }
+
+  async emitIssuerAdded(issuerId: string, payload: any): Promise<void> {
+    await this.triggerEvent(
+      CertificateWebhookEvent.IssuerAdded as unknown as WebhookEvent,
+      issuerId,
+      payload,
+    );
+  }
+
+  async emitIssuerRemoved(issuerId: string, payload: any): Promise<void> {
+    await this.triggerEvent(
+      CertificateWebhookEvent.IssuerRemoved as unknown as WebhookEvent,
+      issuerId,
+      payload,
+    );
+  }
+
+  // BROADCAST EVENT
   async triggerEvent(event: WebhookEvent, issuerId: string, payload: any) {
     const subs = await this.subscriptionRepository
       .createQueryBuilder('sub')
       .where('sub.issuerId = :issuerId', { issuerId })
       .andWhere('sub.isActive = :isActive', { isActive: true })
-      .andWhere(':event = ANY(sub.events)', { event })
+      .andWhere(':revent = ANY(sub.events)', { event })
       .getMany();
 
     for (const sub of subs) {

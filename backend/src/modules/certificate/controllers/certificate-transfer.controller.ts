@@ -25,7 +25,7 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '../../../common/constants/roles';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 
-@ApiTags('Certificate Transfers')
+@UpiTags('Certificate Transfers')
 @ApiBearerAuth()
 @Controller('certificates/transfers')
 export class CertificateTransferController {
@@ -95,9 +95,18 @@ export class CertificateTransferController {
 
   @Get('certificate/:certificateId/history')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Get transfer history for a certificate' })
-  async getTransferHistory(@Param('certificateId') certificateId: string) {
-    return this.transferService.getTransferHistory(certificateId);
+  @ApiOperation({
+    summary: 'Get transfer history for a certificate',
+    description:
+      'Returns transfer records for a certificate. Access is restricted to the certificate issuer, the transfer participants (from/to owner), or an admin.',
+  })
+  @ApiResponse({ status: 200, description: 'Transfer history retrieved' })
+  @ApiResponse({ status: 403, description: 'Not authorized to view this history' })
+  async getTransferHistory(
+    @Param('certificateId') certificateId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.transferService.getTransferHistory(certificateId, user);
   }
 
   @Get('pending')

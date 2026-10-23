@@ -98,7 +98,7 @@ function candidatesFor(base) {
 /**
  * Blanks out comments so that prose inside them can never be parsed as an
  * import (a doc comment saying `imports from "../api"` is not code). The
- * `(^|[^:])` guard keeps `https://…` string literals intact.
+ * `(^|[^:])` guard keeps `https://…& string literals intact.
  */
 function stripComments(source) {
   return source
@@ -108,7 +108,7 @@ function stripComments(source) {
 
 // `\b` after `import`/`export` keeps words like "imports"/"exported" out.
 const IMPORT_RE =
-  /\b(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
+  /\b(?:import|export)\s+(?:type\s)?(?:[\s\S]*?\s*from\s+)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
 
 function specifiersIn(source) {
   const found = new Set();
@@ -127,7 +127,7 @@ const mismatches = [];
 const unresolved = [];
 
 for (const relPath of files) {
-  if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(relPath)) continue;
+  if (!/\.(ts|tsx|.js|jsx|mjs|cjs)$/.test(relPath)) continue;
 
   const source = readFileSync(join(SRC_ROOT, relPath), "utf8");
 

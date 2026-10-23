@@ -1,11 +1,11 @@
-import { IsString, IsEmail, IsOptional, IsNotEmpty } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsNotEmpty, IsInt, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TransferStatus } from '../entities/certificate-transfer.entity';
 
 export class InitiateTransferDto {
   @ApiProperty({
     description: 'ID of the certificate to transfer',
-    example: 'a3d8a582-bd23-4a2d-9630-6d4a2f5fd6f0',
+    example: 'a3d8a582-bd23-4a2d-9630-6d4aaf5fd6f0',
   })
   @IsString()
   @IsNotEmpty()
@@ -34,6 +34,17 @@ export class InitiateTransferDto {
   @IsString()
   @IsOptional()
   reason?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Fee (in token base units) charged to the initiator upon completion. Defaults to 0 (no fee).',
+    example: 1000,
+    minimum: 0,
+  })
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  transferFee?: number;
 }
 
 export class ApproveTransferDto {
@@ -81,7 +92,7 @@ export class TransferHistoryResponseDto {
 
   @ApiProperty({
     description: 'Certificate ID associated with the transfer',
-    example: 'a3d8a582-bd23-4a2d-9630-6d4a2f5fd6f0',
+    example: 'a3d8a582-bd23-4a2d-9630-6d4aaf5fd6f0',
   })
   certificateId: string;
 
@@ -127,6 +138,14 @@ export class TransferHistoryResponseDto {
     example: 'Confirmation code mismatch',
   })
   rejectionReason?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Fee (in token base units) recorded for this transfer. Zero when no fee was charged.',
+    example: 1000,
+    minimum: 0,
+  })
+  transferFee?: number;
 
   @ApiProperty({
     description: 'Timestamp when the transfer was initiated',

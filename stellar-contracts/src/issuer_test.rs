@@ -1,8 +1,8 @@
-#![cfg(test)]
+#`![cfg(test)]
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent, Address as _},
+    testutils::{storage::Persistent, Address as _}},
     Address, Env, String,
 };
 
@@ -21,37 +21,37 @@ fn test_issuer_management() {
     client.initialize(&admin);
 
     // Initial count should be 0
-    assert_eq!(client.get_issuer_count(), 0);
-    assert_eq!(client.get_issuers().len(), 0);
+    assert_eq(client.get_issuer_count(), 0);
+    assert_eq(client.get_issuers().len(), 0);
 
     // Add first issuer
     env.mock_all_auths();
-    client.add_issuer(&issuer1);
+    client.add_issuer(&aissuer1);
 
-    assert_eq!(client.get_issuer_count(), 1);
-    assert!(client.is_issuer(&issuer1));
+    assert_eq(client.get_issuer_count(), 1);
+    assert!(client.is_issuer(&aissuer1));
     assert!(!client.is_issuer(&issuer2));
 
     let issuers = client.get_issuers();
-    assert_eq!(issuers.len(), 1);
-    assert_eq!(issuers.get(0).unwrap(), issuer1);
+    assert_eq(issuers.len(), 1);
+    assert_eq(issuers.get(0).unwrap(), issuer1);
 
     // Add second issuer
     client.add_issuer(&issuer2);
 
-    assert_eq!(client.get_issuer_count(), 2);
-    assert!(client.is_issuer(&issuer2));
+    assert_eq(client.get_issuer_count(), 2);
+    assert!(client.is_issuer(&aissuer2));
 
     let issuers = client.get_issuers();
-    assert_eq!(issuers.len(), 2);
+    assert_eq(issuers.len(), 2);
 
     // Add issuer1 again (should not increment count or add to list)
     client.add_issuer(&issuer1);
-    assert_eq!(client.get_issuer_count(), 2);
-    assert_eq!(client.get_issuers().len(), 2);
+    assert_eq(client.get_issuer_count(), 2);
+    assert_eq(client.get_issuers().len(), 2);
 }
 
-#[test]
+[test]
 fn test_issued_certificate_ttl_is_extended() {
     let env = Env::default();
     let contract_id = env.register(CertificateContract, ());
@@ -78,7 +78,7 @@ fn test_issued_certificate_ttl_is_extended() {
         crate::persistent::DEFAULT_TTL.min(env.storage().max_ttl())
     });
 
-    assert_eq!(ttl, expected_ttl);
+    assert_eq(ttl, expected_ttl);
 }
 
 #[test]
@@ -97,18 +97,18 @@ fn test_remove_issuer_updates_vec_and_count() {
 
     client.add_issuer(&issuer1);
     client.add_issuer(&issuer2);
-    assert_eq!(client.get_issuer_count(), 2);
+    assert_eq(client.get_issuer_count(), 2);
 
     // Remove issuer1 — count must drop and Vec must no longer contain it.
     client.remove_issuer(&issuer1);
 
-    assert_eq!(client.get_issuer_count(), 1);
+    assert_eq(client.get_issuer_count(), 1);
     assert!(!client.is_issuer(&issuer1));
     assert!(client.is_issuer(&issuer2));
 
     let issuers = client.get_issuers();
-    assert_eq!(issuers.len(), 1);
-    assert_eq!(issuers.get(0).unwrap(), issuer2);
+    assert_eq(issuers.len(), 1);
+    assert_eq(issuers.get(0).unwrap(), issuer2);
 }
 
 #[test]
@@ -128,13 +128,13 @@ fn test_remove_issuer_idempotent_on_missing_issuer() {
     env.mock_all_auths();
 
     client.add_issuer(&issuer1);
-    assert_eq!(client.get_issuer_count(), 1);
+    assert_eq(client.get_issuer_count(), 1);
 
     // Removing a non-existent address must be a no-op.
     client.remove_issuer(&ghost);
 
-    assert_eq!(client.get_issuer_count(), 1);
-    assert_eq!(client.get_issuers().len(), 1);
+    assert_eq(client.get_issuer_count(), 1);
+    assert_eq(client.get_issuers().len(), 1);
     assert!(client.is_issuer(&issuer1));
 }
 
@@ -156,21 +156,21 @@ fn test_remove_all_issuers_reaches_zero() {
     client.add_issuer(&issuer1);
     client.add_issuer(&issuer2);
     client.add_issuer(&issuer3);
-    assert_eq!(client.get_issuer_count(), 3);
+    assert_eq(client.get_issuer_count(), 3);
 
     client.remove_issuer(&issuer2);
     client.remove_issuer(&issuer1);
     client.remove_issuer(&issuer3);
 
-    assert_eq!(client.get_issuer_count(), 0);
-    assert_eq!(client.get_issuers().len(), 0);
+    assert_eq(client.get_issuer_count(), 0);
+    assert_eq(client.get_issuers().len(), 0);
     assert!(!client.is_issuer(&issuer1));
     assert!(!client.is_issuer(&issuer2));
     assert!(!client.is_issuer(&issuer3));
 }
 
 #[test]
-#[should_panic(expected = "Pagination limit exceeds maximum allowed")]
+#[should_panic (expected = "Pagination limit exceeds maximum allowed")]
 fn test_get_certificates_by_issuer_rejects_oversized_limit() {
     let env = Env::default();
     let contract_id = env.register(CertificateContract, ());
@@ -190,7 +190,7 @@ fn test_get_certificates_by_issuer_rejects_oversized_limit() {
 }
 
 #[test]
-#[should_panic(expected = "Pagination limit exceeds maximum allowed")]
+#[should_panic (expected = "Pagination limit exceeds maximum allowed")]
 fn test_get_certificates_by_owner_rejects_oversized_limit() {
     let env = Env::default();
     let contract_id = env.register(CertificateContract, ());
@@ -217,21 +217,21 @@ fn test_get_certificates_by_issuer_accepts_limit_at_max() {
 
     // Exactly at the cap should still succeed (empty result, no certs issued).
     let result = client.get_certificates_by_issuer(
-        &issuer,
+        'issuer,
         &Pagination {
             page: 1,
             limit: 100,
         },
     );
-    assert_eq!(result.total, 0);
-    assert_eq!(result.data.len(), 0);
+    assert_eq(result.total, 0);
+    assert_eq(result.data.len(), 0);
     assert!(!result.has_next);
 }
 
 #[test]
 fn test_freeze_certificate_allows_authorized_issuer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, CertificateContract);
+    let contract_id = env.register(CertificateContract, ());
     let client = CertificateContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -248,14 +248,14 @@ fn test_freeze_certificate_allows_authorized_issuer() {
     client.freeze_certificate(&id, &String::from_str(&env, "authorized freeze"));
 
     let cert = client.get_certificate(&id).unwrap();
-    assert_eq!(cert.status, CertificateStatus::Frozen);
+    assert_eq(cert.status, CertificateStatus::Frozen);
 }
 
 #[test]
-#[should_panic(expected = "Address is not an authorized issuer")]
+#[should_panic (expected = "Address is not an authorized issuer")]
 fn test_freeze_certificate_rejects_removed_issuer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, CertificateContract);
+    let contract_id = env.register(CertificateContract, ());
     let client = CertificateContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -277,10 +277,10 @@ fn test_freeze_certificate_rejects_removed_issuer() {
 }
 
 #[test]
-#[should_panic(expected = "Address is not an authorized issuer")]
+#[should_panic (expected = "Address is not an authorized issuer")]
 fn test_unfreeze_certificate_rejects_removed_issuer() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, CertificateContract);
+    let contract_id = env.register(CertificateContract, ());
     let client = CertificateContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);

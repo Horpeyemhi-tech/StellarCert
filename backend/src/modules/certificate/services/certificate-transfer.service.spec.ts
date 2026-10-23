@@ -12,12 +12,14 @@ describe('CertificateTransferService', () => {
   let logger: any;
   let userRepo: any;
   let emailService: any;
+  let feeCharger: any;
 
   beforeEach(() => {
     transferRepo = {
       create: jest.fn((dto) => ({ id: 'transfer-1', ...dto })),
       save: jest.fn((entity) => Promise.resolve(entity)),
       findOne: jest.fn(),
+      find: jest.fn(),
     };
 
     certRepo = {
@@ -26,11 +28,11 @@ describe('CertificateTransferService', () => {
     };
 
     auditService = {
-      log: jest.fn().mockResolvedValue(undefined),
+      log: jest.fn().mockResolved(undefined),
     };
 
     notificationsService = {
-      createNotification: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      createNotification: jest.fn().mockResolved({ id: 'notif-1' }),
     };
 
     logger = {
@@ -44,8 +46,14 @@ describe('CertificateTransferService', () => {
     };
 
     emailService = {
-      sendTransferConfirmationCode: jest.fn().mockResolvedValue(undefined),
-      sendTransferCompletedNotice: jest.fn().mockResolvedValue(undefined),
+      sendTransferConfirmationCode: jest.fn().mockResolved(undefined),
+      sendTransferCompletedNotice: jest.fn().mockResolved(undefined),
+    };
+
+    feeCharger = {
+      chargeTransferFee: jest
+        .fn()
+        .mockResolved({ transactionHash: 'tx-hash-1' }),
     };
 
     service = new CertificateTransferService(
@@ -56,6 +64,7 @@ describe('CertificateTransferService', () => {
       logger,
       userRepo,
       emailService,
+      feeCharger,
     );
   });
 
@@ -69,7 +78,7 @@ describe('CertificateTransferService', () => {
         recipientName: 'Old Owner',
         status: 'active',
       };
-      certRepo.findOne.mockResolvedValue(mockCert);
+      certRepo.findOne.mockResolved(mockCert);
 
       const recipientUser = {
         id: 'user-recipient-99',
@@ -77,7 +86,7 @@ describe('CertificateTransferService', () => {
         firstName: 'New',
         lastName: 'Owner',
       };
-      userRepo.findOne.mockResolvedValue(recipientUser);
+      userRepo.findOne.mockResolved(recipientUser);
 
       const dto = {
         certificateId: 'cert-1',
@@ -121,9 +130,158 @@ describe('CertificateTransferService', () => {
         confirmationCode: code,
       });
     });
+
+    it('still sends the confirmation email to toEmail when the recipient has no account', async () => {
+      const mockCert = {
+        id: 'cert-2',
+        title: 'Certified Architect',
+        issuerId: 'issuer-1',
+        recipientEmail: 'old@example.com',
+        recipientName: 'Old Owner',
+        status: 'active',
+      };
+      certRepo.findOne.mockResolvedValue(mockCert);
+      userRepo.findOne.mockResolvedValue(null);
+
+      const dto = {
+        certificateId: 'cert-2',
+        newOwnerEmail: 'unregistered@example.com',
+        newOwnerName: 'Unregistered Owner',
+        reason: 'Handover',
+      };
+
+      const result = await service.initiateTransfer(
+        dto,
+        { id: 'issuer-1', role: UserRole.ISSUER },
+        '127.0.0.1',
+      );
+
+      // No recipient user notification, but email still goes out to toEmail
+      expect(notificationsService.createNotification).not.toHaveBeenCalledWith(
+        expect.anything(),
+        NotificationType.INFO,
+        'Certificate Transfer Confirmation Code',
+        expect.anything(),
+      );
+      expect(emailService.sendTransferConfirmationCode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'unregistered@example.com',
+          confirmationCode: result.confirmationCode,
+        }),
+      );
+    });
+
+    it('logs a confirmation email failure without failing the transfer', async () => {
+      const mockCert = {
+        id: 'cert-3',
+        title: 'Certified Dev',
+        issuerId: 'issuer-1',
+        recipientEmail: 'old@example.com',
+        recipientName: 'Old Owner',
+        status: 'active',
+      };
+      certRepo.findOne.mockResolvedValue(mockCert);
+      userRepo.findOne.mockResolvedValue(null);
+      emailService.sendTransferConfirmationCode.mockRejected(
+        new Error('SMTP down'),
+      );
+
+      const dto = {
+        certificateId: 'cert-3',
+        newOwnerEmail: 'newowner@example.com',
+        newOwnerName: 'New Owner',
+        reason: 'Handover',
+      };
+
+      await expect(
+        service.initiateTransfer(
+          dto,
+          { id: 'issuer-1', role: UserRole.ISSUER },
+          '127.0.0.1',
+        ),
+      ).resolves.toBeDefined();
+      expect(logger.warn).toHaveBeenCalled();
+    });
   });
 
   describe('approveTransfer', () => {
+    it('rejects completion when certificate owner no longer matches transfer.fromOwner (double-transfer)', async () => {
+      const mockTransfer = {
+        id: 'transfer-2',
+        certificateId: 'cert-1',
+        fromOwner: 'owner-a',
+        fromEmail: 'a@example.com',
+        fromName: 'Owner A',
+        toEmail: 'c@example.com',
+        toName: 'Owner C',
+        confirmationCode: '654321',
+        status: TransferStatus.PENDING,
+      };
+
+      transferRepo.findOne.mockResolvedValue(mockTransfer);
+      // Certificate was already transferred to owner B by a prior completion.
+      certRepo.findOne.mockResolvedValue({
+        id: 'cert-1',
+        title: 'Blockchain Certified Developer',
+        issuerId: 'issuer-1',
+        owner: 'owner-b',
+        recipientEmail: 'b@example.com',
+        recipientName: 'Owner B',
+        status: 'active',
+        metadata: {},
+      });
+
+      await expect(
+        service.approveTransfer(
+          'transfer-2',
+          '654321',
+          { id: 'approver-1', role: UserRole.ADMIN },
+          '127.0.0.1',
+        ),
+      ).rejects.toThrow();
+
+      expect(certRepo.save).not.toHaveBeenCalled();
+      expect(emailService.sendTransferCompletedNotice).not.toHaveBeenCalled();
+    });
+
+    it('rejects completion when certificate is no longer active', async () => {
+      const mockTransfer = {
+        id: 'transfer-3',
+        certificateId: 'cert-1',
+        fromOwner: 'owner-a',
+        fromEmail: 'a@example.com',
+        fromName: 'Owner A',
+        toEmail: 'b@example.com',
+        toName: 'Owner B',
+        confirmationCode: '111111',
+        status: TransferStatus.PENDING,
+      };
+
+      transferRepo.findOne.mockResolvedValue(mockTransfer);
+      certRepo.findOne.mockResolvedValue({
+        id: 'cert-1',
+        title: 'Blockchain Certified Developer',
+        issuerId: 'issuer-1',
+        owner: 'owner-a',
+        recipientEmail: 'a@example.com',
+        recipientName: 'Owner A',
+        status: 'revoked',
+        metadata: {},
+      });
+
+      await expect(
+        service.approveTransfer(
+          'transfer-3',
+          '111111',
+          { id: 'approver-1', role: UserRole.ADMIN },
+          '127.0.0.1',
+        ),
+      ).rejects.toThrow();
+
+      expect(certRepo.save).not.toHaveBeenCalled();
+      expect(emailService.sendTransferCompletedNotice).not.toHaveBeenCalled();
+    });
+
     it('notifies both approver and recipient (toEmail) on completion', async () => {
       const mockTransfer = {
         id: 'transfer-1',
@@ -133,6 +291,7 @@ describe('CertificateTransferService', () => {
         toEmail: 'newowner@example.com',
         toName: 'New Owner',
         confirmationCode: '123456',
+        transferFee: '0',
         status: TransferStatus.PENDING,
         certificate: {
           id: 'cert-1',
@@ -145,15 +304,15 @@ describe('CertificateTransferService', () => {
         },
       };
 
-      transferRepo.findOne.mockResolvedValue(mockTransfer);
-      certRepo.findOne.mockResolvedValue(mockTransfer.certificate);
+      transferRepo.findOne.mockResolved(mockTransfer);
+      certRepo.findOne.mockResolved(mockTransfer.certificate);
 
       const recipientUser = {
         id: 'user-recipient-99',
         email: 'newowner@example.com',
         firstName: 'New',
       };
-      userRepo.findOne.mockResolvedValue(recipientUser);
+      userRepo.findOne.mockResolved(recipientUser);
 
       await service.approveTransfer(
         'transfer-1',
@@ -185,6 +344,249 @@ describe('CertificateTransferService', () => {
         certificateTitle: 'Blockchain Certified Developer',
         certificateId: 'cert-1',
       });
+    });
+
+    it('still sends the completion email to toEmail when the recipient has no account', async () => {
+      const mockTransfer = {
+        id: 'transfer-2',
+        certificateId: 'cert-2',
+        fromEmail: 'old@example.com',
+        fromName: 'Old Owner',
+        toEmail: 'unregistered@example.com',
+        toName: 'Unregistered',
+        confirmationCode: '654321',
+        status: TransferStatus.PENDING,
+        certificate: {
+          id: 'cert-2',
+          title: 'Certified Architect',
+          issuerId: 'issuer-1',
+          recipientEmail: 'old@example.com',
+          recipientName: 'Old Owner',
+          status: 'active',
+          metadata: {},
+        },
+      };
+
+      transferRepo.findOne.mockResolvedValue(mockTransfer);
+      certRepo.findOne.mockResolvedValue(mockTransfer.certificate);
+      userRepo.findOne.mockResolvedValue(null);
+
+      await service.approveTransfer(
+        'transfer-2',
+        '654321',
+        { id: 'approver-1', role: UserRole.ADMIN },
+        '127.0.0.1',
+      );
+
+      // No recipient user notification, but completion email still goes out
+      expect(notificationsService.createNotification).not.toHaveBeenCalledWith(
+        expect.anything(),
+        NotificationType.SUCCESS,
+        'Certificate Transfer Completed',
+        expect.stringContaining('your account'),
+      );
+      expect(emailService.sendTransferCompletedNotice).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'unregistered@example.com' }),
+      );
+    });
+
+    it('rejects the transfer when the confirmation code is invalid', async () => {
+      const mockTransfer = {
+        id: 'transfer-3',
+        certificateId: 'cert-3',
+        fromEmail: 'old@example.com',
+        toEmail: 'newowner@example.com',
+        confirmationCode: '111111',
+        status: TransferStatus.PENDING,
+        certificate: {
+          id: 'cert-3',
+          title: 'Certified Dev',
+          issuerId: 'issuer-1',
+          recipientEmail: 'old@example.com',
+          recipientName: 'Old Owner',
+          status: 'active',
+          metadata: {},
+        },
+      };
+      transferRepo.findOne.mockResolvedValue(mockTransfer);
+
+      await expect(
+        service.approveTransfer(
+          'transfer-3',
+          'wrong-code',
+          { id: 'approver-1', role: UserRole.ADMIN },
+          '127.0.0.1',
+        ),
+      ).rejectsToThrow('Invalid confirmation code');
+      expect(certRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('rejectTransfer', () => {
+    it('notifies the intended new owner (toEmail) on rejection', async () => {
+      const mockTransfer = {
+        id: 'transfer-4',
+        certificateId: 'cert-4',
+        fromEmail: 'old@example.com',
+        toEmail: 'newowner@example.com',
+        confirmationCode: '222222',
+        initiatedBy: 'issuer-1',
+        status: TransferStatus.PENDING,
+        certificate: {
+          id: 'cert-4',
+          title: 'Certified Dev',
+          issuerId: 'issuer-1',
+          recipientEmail: 'old@example.com',
+          recipientName: 'Old Owner',
+          status: 'active',
+          metadata: {},
+        },
+      };
+      transferRepo.findOne.mockResolvedValue(mockTransfer);
+      userRepo.findOne.mockResolvedValue({
+        id: 'user-recipient-99',
+        email: 'newowner@example.com',
+      });
+
+      await service.rejectTransfer(
+        'transfer-4',
+        'Wrong recipient',
+        { id: 'issuer-1', role: UserRole.ISSUER },
+        '127.0.0.1',
+      );
+
+      expect(notificationsService.createNotification).toHaveBeenCalledWith(
+        'user-recipient-99',
+        NotificationType.WARNING,
+        'Certificate Transfer Rejected',
+        expect.stringContaining('was rejected'),
+      );
+    });
+  });
+
+  describe('getTransfer authorization', () => {
+    const buildTransfer = () => ({
+      id: 'transfer-1',
+      certificateId: 'cert-1',
+      fromOwnerId: 'owner-from',
+      toOwnerId: 'to-owner',
+      fromEmail: 'from@example.com',
+      toEmail: 'to@example.com',
+      fromName: 'From Owner',
+      toName: 'To Owner',
+      fee: 10,
+      memo: 'sensitive memo',
+      status: TransferStatus.PENDING,
+    });
+
+    it('returns the transfer to the from owner', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'owner-from',
+        role: UserRole.USER,
+      });
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe('transfer-1');
+    });
+
+    it('returns the transfer to the to owner', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'to-owner',
+        role: UserRole.USER,
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('returns the transfer to an admin', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      const result = await service.getTransfer('transfer-1', {
+        id: 'admin-1',
+        role: UserRole.ADMIN,
+      });
+
+      expect(result).toBeDefined();
+    });
+
+    it('rejects an unrelated observer without leaking transfer details', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      await expect(
+        service.getTransfer('transfer-1', {
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects an anonymous caller', async () => {
+      transferRepo.findOne.mockResolvedValue(buildTransfer());
+
+      await expect(service.getTransfer('transfer-1', undefined as any)).rejects.toThrow();
+    });
+
+    it('rejects when the transfer does not exist', async () => {
+      transferRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.getTransfer('transfer-1', {
+          id: 'owner-from',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getTransferHistoryPublic authorization', () => {
+    it('returns history to a participant', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      const result = await service.getTransferHistoryPublic('cert-1', {
+        id: 'owner-from',
+        role: UserRole.USER,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('rejects an unrelated observer', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getTransferHistoryPublic('cert-1', {
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getPendingTransfersPublic authorization', () => {
+    it('returns pending transfers to a participant', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      const result = await service.getPendingTransfersPublic({
+        id: 'to-owner',
+        role: UserRole.USER,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('rejects an unrelated observer', async () => {
+      transferRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getPendingTransfersPublic({
+          id: 'observer-1',
+          role: UserRole.USER,
+        }),
+      ).rejects.toThrow();
     });
   });
 });
